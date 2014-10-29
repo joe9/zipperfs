@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE StandaloneDeriving #-}
+
 -- Zipper over the Map with path accumulation
 -- and sharing preservation
 -- $Id: ZipperM.hs,v 1.4 2005/09/22 03:06:38 oleg Exp $
@@ -8,19 +11,19 @@ module ZipperM (Term(..)
 		, NavigateDir(..)
 		, DZipper(..)
 		, dzip'term
-	        , module CCCxe
+	        , module Control.Monad.CC.CCCxe
 	       ) where
 
 -- Import (one of the) CC libraries
 -- http://okmij.org/ftp/continuations/implementations.html#CC-monads
 -- We chose CCCxe; CCExe would work just as well
 -- We chose the prompt flavor PP
-import CCCxe
+import           Control.Monad.CC.CCCxe
 
-import Control.Monad.Identity
-import Control.Monad.Trans
-import Data.Map as Map
-import Data.Typeable
+import           Control.Monad.Identity
+import           Control.Monad.Trans
+import qualified Data.Map               as Map
+import           Data.Typeable
 
 -- -------------------------------------------------------------
 -- The Term to traverse: the representation of a file system
@@ -34,7 +37,7 @@ data Term = File FileCont | Folder (Map.Map FileName Term)
 
 instance Show Term where
     showsPrec _ (File file) = (file ++)
-    showsPrec _ (Folder dir) = 
+    showsPrec _ (Folder dir) =
 	("\n >>>" ++) . (Map.foldWithKey fl ("\n<<<" ++) dir)
 	where fl k term acc = ("\n" ++) . (k ++) . (": " ++) .
 			      (showsPrec 5 term) . acc
@@ -65,10 +68,10 @@ type Path = [PathComp]
 -- Where to go next: the iteratee tells the global enumerator where
 -- to go next. The iteratee may also tell to update the current
 -- term
-data NavigateDir = 
+data NavigateDir =
     Update Term		-- replace the current term with the given
-  | DownTo FileName 
-  | Up 
+  | DownTo FileName
+  | Up
   | Next
     deriving (Show)
 
@@ -101,9 +104,9 @@ traverse tf term = loop Nothing [] term
   up _               term = return (term,Unmodified)
 
   down _ path term@File{} Next = up path term
-  down _ _         File{} nav  = 
+  down _ _         File{} nav  =
     error $ "bad navigation from a File: " ++ show nav
-  down _ path pt@(Folder fld) (DownTo fname) 
+  down _ path pt@(Folder fld) (DownTo fname)
                                | Just term <- Map.lookup fname fld =
     child fname path fld term
   down _ path _ (DownTo fname) = error $ "No folder component: " ++ fname
@@ -119,7 +122,7 @@ traverse tf term = loop Nothing [] term
 
   child fname path fld term =
     loop Nothing (PathName fname:path) term >>= \x -> case x of
-      (term, Dirty) -> 
+      (term, Dirty) ->
 	   loop (Just fname) (PathUpdated:path)
 		    (Folder (Map.insert fname term fld))
       _             -> loop (Just fname) path (Folder fld)
@@ -143,7 +146,7 @@ testt2 = traverse tf fs1
     where tf path term = do print path; print term; return Next
 
 testt3 = traverse tf fs1
-  where 
+  where
   tf (PathName "d11":_) term  = do
      print "cutting"
      print term
@@ -173,17 +176,18 @@ lprint x = liftIO $ print x
 -- state is left for the clients. Zipper can let us add a new, `missing'
 -- aspect to the enumerator.
 
-data DZipper m = 
+data DZipper m =
     DZipper{
 	    dz_path :: [FileName],
 	    dz_term :: Term,
-	    dz_k :: NavigateDir -> CC PP m (DZipper m)
+	    dz_k    ::     NavigateDir -> CC PP m (DZipper m)
 	    }
   | DZipDone Term
+    deriving (Typeable)
 
-instance Typeable1 m => Typeable (DZipper m) where
-  typeOf x = mkTyConApp (mkTyCon "ZipperM.DZipper") [typeOf1 $ mof x]
-    where mof :: DZipper m -> m (); mof = undefined
+-- instance Typeable1 m => Typeable (DZipper m) where
+--   typeOf x = mkTyConApp (mkTyCon "ZipperM.DZipper") [typeOf1 $ mof x]
+--     where mof :: DZipper m -> m (); mof = undefined
 
 -- One prompt, used by the generator (the yield/enumerate pair)
 -- We instantiate the global pp to the desired answer-type.
@@ -192,7 +196,7 @@ pz = pp
 
 dzip'term :: (Typeable1 m, Monad m) => Term -> CC PP m (DZipper m)
 dzip'term term = pushPrompt pz (traverse tf term >>= return . DZipDone . fst)
- where 
+ where
  tf path term = shift0P pz (\k -> return $ DZipper (dir_path path) term k)
  dir_path = foldr filterfn []
  filterfn (PathName fname) acc = fname : acc

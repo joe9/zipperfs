@@ -1,4 +1,6 @@
-{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE Rank2Types         #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- Zipper-based File/Operating system
 -- with threading and exceptions all realized via delimited continuations.
@@ -6,7 +8,7 @@
 -- no concurrency problems. Our threads can't even do IO and can't
 -- mutate any global state -- and the type system sees to it.
 
--- Please see http://okmij.org/ftp/continuations/ZFS/zfs-talk.pdf 
+-- Please see http://okmij.org/ftp/continuations/ZFS/zfs-talk.pdf
 -- for the demo and explanations.
 
 -- $Id: ZFS.hs,v 1.8 2005/10/14 23:00:41 oleg Exp $
@@ -14,21 +16,21 @@
 
 module ZFS where
 
-import ZipperM
+import           ZipperM
 -- From the Iteratee library
-import LowLevelIO
+import           LowLevelIO
 
-import Data.Map  as Map
-import Data.List as List
-import Data.Typeable
+import           Data.List           as List
+import qualified Data.Map            as Map
+import           Data.Typeable
 
-import Network.Socket
-import System.IO
-import System.IO.Error as IO
-import Control.Monad.Trans (liftIO)
-import Control.Exception (bracket, throwIO)
-import System.Posix.Types(Fd(..))
-import Foreign.C.Error (errnoToIOError)
+import           Control.Exception   (bracket, throwIO)
+import           Control.Monad.Trans (liftIO)
+import           Foreign.C.Error     (errnoToIOError)
+import           Network.Socket
+import           System.IO
+import           System.IO.Error     as IO
+import           System.Posix.Types  (Fd (..))
 
 
 -- Port to serve clients from
@@ -71,10 +73,11 @@ data OSReq m = OSRDone
 	     | OSRTrace String (UnitK m) -- so a process can syslog
 	     | OSRCommit Term (UnitK  m)
 	     | OSRefresh (FSZipper m -> CCM m (OSReq m))
+               deriving (Typeable)
 
-instance Typeable1 m => Typeable (OSReq m) where
-  typeOf x = mkTyConApp (mkTyCon "ZFS.OSReq") [typeOf1 $ mof x]
-    where mof :: OSReq m -> m (); mof = undefined
+-- instance Typeable1 m => Typeable (OSReq m) where
+--   typeOf x = mkTyConApp (mkTyCon "ZFS.OSReq") [typeOf1 $ mof x]
+--     where mof :: OSReq m -> m (); mof = undefined
 
 -- The OS services prompt
 -- We instantiate the global pp to the desired answer-type.
@@ -87,7 +90,7 @@ type ReadK m = String -> CCM m (OSReq m)
 data ProcessCTX = ProcessCTX { psocket :: Socket -- process' socket
 			     }
 
--- A process can only be blocked on reading. For simplicity we assume 
+-- A process can only be blocked on reading. For simplicity we assume
 -- that writing into the client socket never blocks
 
 data JobQueueT = JQBlockedOnRead ProcessCTX (ReadK IO)
@@ -95,7 +98,7 @@ data JobQueueT = JQBlockedOnRead ProcessCTX (ReadK IO)
 	       | JQNewClient Socket  -- accept new clients from
 
 data World = World { mountedFS :: Term
-		   , jobQueue  :: [JobQueueT]
+		   , jobQueue  :: [JobQueueT ]
 		   }
 main = main' fs1
 
@@ -116,13 +119,13 @@ main' fs = bracket (serverSocket newClientPort) sClose $
   listen s 5
   return s
 
--- In OS parlance, the following is the interrupt handler. 
+-- In OS parlance, the following is the interrupt handler.
 -- It `waits' for interrupts that is, if any input socket has something
 -- to read from.
 -- It doesn't actually return, so the answer type is just any
 
 osloop :: World -> CCM IO any
-osloop world = 
+osloop world =
     maybe (wait'for'intr world) (uncurry try'to'run) (find'runnable world)
     >>= osloop
 
@@ -135,20 +138,20 @@ osloop world =
    where is'runnable (JQRunnable _ _) = True
 	 is'runnable _                = False
 
-  wait'for'intr world@World{jobQueue=jq} = 
-      do readyfd <- liftIO ( select'read'pending mfd >>= 
+  wait'for'intr world@World{jobQueue=jq} =
+      do readyfd <- liftIO ( select'read'pending mfd >>=
                              either select_err return )
 	 case break (\e -> maybe False (`elem` readyfd) (toFD e)) jq of
 	    (jq,[]) -> return world -- nothing found
-	    (jq1,(now'runnable:jq2)) -> 
+	    (jq1,(now'runnable:jq2)) ->
 		try'to'run now'runnable world{jobQueue=jq1++jq2}
    where
    -- compile the list of file descriptors we are waiting at
    mfd :: [Fd]
-   mfd = foldr (\e a -> maybe [] (:a) (toFD e)) [] jq 
+   mfd = foldr (\e a -> maybe [] (:a) (toFD e)) [] jq
    toFD :: JobQueueT -> Maybe Fd
    toFD (JQNewClient s) = Just . fromIntegral $ fdSocket s
-   toFD (JQBlockedOnRead ProcessCTX{psocket=s} _) = 
+   toFD (JQBlockedOnRead ProcessCTX{psocket=s} _) =
        Just . fromIntegral $ fdSocket s
    toFD _ = Nothing
 
@@ -177,7 +180,7 @@ osloop world =
       syslog ["reading from",show s]
       syslog ["osloop: queue size: ", show $ length $ jobQueue world]
       dat <- liftIO $ (
-	     do r <-  IO.try (recv s (1024 * 8))
+	     do r <-  IO.tryIOError (recv s (1024 * 8))
                 case r of
                        Left err  -> if isEOFError err then return ""
                                     else ioError err
@@ -203,7 +206,7 @@ interpret'req world ctx OSRDone = (liftIO . sClose $ psocket ctx)
 -- The request for read may block. So, we do the context switch and go
 -- to the main loop, to check if the process socket has something to read
 -- from
-interpret'req world ctx (OSRRead k) = 
+interpret'req world ctx (OSRRead k) =
        return world{jobQueue = (jobQueue world) ++ [JQBlockedOnRead ctx k]}
 
 -- We assume that writing to a socket never blocks
@@ -218,11 +221,11 @@ interpret'req world ctx (OSRWrite datum k) = do
 interpret'req world ctx (OSRTrace datum k) = do
   syslog ["Trace from",show $ psocket ctx,": ",datum]
   k () >>= interpret'req world ctx
-      
+
 interpret'req world ctx (OSRCommit term k) =
   return world{jobQueue = jobQueue world ++ [JQRunnable ctx k],
 	       mountedFS = term}
-   
+
 interpret'req world ctx (OSRefresh k) =
        (dzip'term $ mountedFS world) >>= k >>= interpret'req world ctx
 
@@ -231,7 +234,7 @@ interpret'req world ctx (OSRefresh k) =
 -- is simply threaded, both at the OS level and at the GHC runtime level.
 -- Our process functions don't even have the IO type!
 -- Note, the function to run the process has forall m. That means, a process
--- function can't do any IO and can't have any reference cells. 
+-- function can't do any IO and can't have any reference cells.
 -- Processes can't mutate the global state -- and the type system checks that!
 -- Because processes can't interfere with each other and with the OS, there
 -- is no need for any thread synchronization, locking, etc. We get
@@ -255,7 +258,7 @@ run'process body = pushPrompt pOS body
 -- Processes. No IO action is possible in here
 
 
-fsProcess :: (Typeable1 m, Monad m) => 
+fsProcess :: (Typeable1 m, Monad m) =>
 	     CCM m (FSZipper m) -> CCM m (OSReq m)
 fsProcess zipper'action = do
   z <- zipper'action
@@ -263,7 +266,7 @@ fsProcess zipper'action = do
   fsloop z ""
 
 
-fsloop :: (Typeable1 m, Monad m) => 
+fsloop :: (Typeable1 m, Monad m) =>
 	  FSZipper m -> String -> CCM m (OSReq m)
 fsloop z line'acc = do
   send_shell_prompt z
@@ -289,11 +292,11 @@ fsloop z line'acc = do
 
 show_path path = concatMap ('/':) $ reverse path
 
-fsCommands :: (Typeable1 m, Monad m) => 
+fsCommands :: (Typeable1 m, Monad m) =>
 	      [(String,
 		FSZipper m -> String -> String -> String -> CCM m (OSReq m))]
 
-fsCommands = 
+fsCommands =
     [
      ("quit", \z _ _ _ -> svc $ const OSRDone),
      ("cd", fsWrapper (\z _ path -> cd'zipper z path >>= return . FSCZ)),
@@ -312,7 +315,7 @@ fsCommands =
      ("cp",    fsWrapper cmd'cp),
 
      ("help",  fsWrapper cmd'help),
-			    
+
      ("commit",  fcmd'commit),
      ("refresh", \z _ _ rest -> svc OSRefresh >>= \z -> fsloop z rest)
    -- next is really cool!
@@ -320,7 +323,7 @@ fsCommands =
     ]
 
 fcmd'commit z _ _ rest = aux z
-  where 
+  where
   aux (DZipDone term) = (svc $ OSRCommit term) >> fsloop z rest
   aux DZipper{dz_k = k} = k Up >>= aux
 
@@ -329,14 +332,15 @@ fcmd'commit z _ _ rest = aux z
 -- The command may report an error, which we catch and show
 -- We use delimited continuations rather than an Error monad
 data FSCmdResp m = FSCS String | FSCZ (FSZipper m)
+                 deriving (Typeable)
 
-type ShellCmd = 
+type ShellCmd =
     (Typeable1 m, Monad m) =>
     FSZipper m -> String -> String -> CCM m (FSCmdResp m)
 
-instance Typeable1 m => Typeable (FSCmdResp m) where
-  typeOf x = mkTyConApp (mkTyCon "ZFS.FSCmdResp") [typeOf1 $ mof x]
-    where mof :: FSCmdResp m -> m (); mof = undefined
+-- instance Typeable1 m => Typeable (FSCmdResp m) where
+--   typeOf x = mkTyConApp (mkTyCon "ZFS.FSCmdResp") [typeOf1 $ mof x]
+--     where mof :: FSCmdResp m -> m (); mof = undefined
 
 -- The Shell services prompt
 -- We instantiate the global pp to the desired answer-type.
@@ -347,7 +351,7 @@ shellErr :: (Typeable1 m, Monad m) => String -> CCM m any
 shellErr = abortP pShell . return . FSCS
 
 fsWrapper cmd z cmd'name cmd'arg rest = do
-  resp <- pushPrompt pShell (cmd z cmd'name cmd'arg) 
+  resp <- pushPrompt pShell (cmd z cmd'name cmd'arg)
   z' <- case resp of
          FSCS str -> (svc $ OSRWrite str) >> return z
          FSCZ z   -> return z
@@ -356,14 +360,14 @@ fsWrapper cmd z cmd'name cmd'arg rest = do
 
 
 cmd'help :: ShellCmd
-cmd'help z _ _ = return $ FSCS $ "Commands: " ++ 
+cmd'help z _ _ = return $ FSCS $ "Commands: " ++
 		   (concat $ intersperse ", " $ List.map fst cmds)
   where
   cmds = fsCommands
   -- The following statement does nothing at run-time. It is here
-  -- just to tell the typechecker that the monad `m' in fsCommands and 
+  -- just to tell the typechecker that the monad `m' in fsCommands and
   -- that in 'z' are the same
-  _ = snd (head cmds) z 
+  _ = snd (head cmds) z
 
 
 cmd'ls z _ slash'path = cd'zipper z slash'path >>= return . FSCS . list_node
@@ -374,7 +378,7 @@ cmd'next z _ _ = do
 
 
 -- main navigation function
-cd'zipper :: (Typeable1 m, Monad m) => 
+cd'zipper :: (Typeable1 m, Monad m) =>
 	     FSZipper m -> String  -> CCM m (FSZipper m)
 cd'zipper z "" = return z
 cd'zipper z ('/':path) = do z' <- ascend'to'root z; cd'zipper z' path
@@ -389,11 +393,11 @@ cd'zipper z ('.':'.':path) = aux z (snd $ span (=='/') path)
 
 cd'zipper DZipper{dz_term = File _} _ =
     shellErr $ "cannot descend down the file"
-cd'zipper DZipper{dz_term = Folder fld, dz_k = k} path 
+cd'zipper DZipper{dz_term = Folder fld, dz_k = k} path
     = let (pc,prest) = breakspan (== '/') path
       in if Map.member pc fld then do
 				   z' <- k (DownTo pc)
-				   cd'zipper z' prest 
+				   cd'zipper z' prest
 	 else shellErr $ "No such dir component " ++ pc
 
 
@@ -402,7 +406,7 @@ cd'zipper DZipper{dz_term = Folder fld, dz_k = k} path
 -- For files, it sends the content of the file
 list_node DZipper{dz_term = File str} = str
 list_node DZipper{dz_term = Folder fld} =
-    Map.foldWithKey (\name el acc -> 
+    Map.foldWithKey (\name el acc ->
 		     "\n" ++ name ++ (case el of Folder _ -> "/"
 				                 _ -> "") ++ acc)
                     "" fld
@@ -413,7 +417,7 @@ list_node DZipper{dz_term = Folder fld} =
 -- Return the updated zipper plus the old value, if existed
 cmd'updnode :: (Typeable1 m, Monad m) =>
 	      Term			-- new value
-	      -> FSZipper m 
+	      -> FSZipper m
 	      -> FileName
 	      -> CCM m (Maybe Term, FSCmdResp m)
 cmd'updnode _ _ dirn | '/' `elem` dirn =
@@ -423,14 +427,14 @@ cmd'updnode _ _ "" =
 cmd'updnode newnode DZipper{dz_term = File _} _ =
     shellErr "cannot create anything in a file"
 cmd'updnode newnode DZipper{dz_term = Folder fld, dz_k = k} dirn =
-    let (old, fld') = Map.insertLookupWithKey 
+    let (old, fld') = Map.insertLookupWithKey
 		        (\_ newnode _ -> newnode) dirn newnode fld
     in k (Update $ Folder fld') >>= \z -> return (old, FSCZ z)
 
 -- Really make a new node; it should not have existed before
 cmd'mknode :: (Typeable1 m, Monad m) =>
 	      Term			-- new value
-	      -> FSZipper m 
+	      -> FSZipper m
 	      -> FileName
 	      -> CCM m (FSCmdResp m)
 cmd'mknode newnode z fname = do
@@ -442,7 +446,7 @@ cmd'echo z _ args = aux $ (reads::ReadS String) args
  where
  aux [(content,rest)] = aux1 content (snd $ span is'whitespace rest)
  aux _ = shellErr $ "bad format, str, of the echo cmd"
- aux1 content ('>':rest) = 
+ aux1 content ('>':rest) =
      cd'zipper z (snd $ span is'whitespace rest) >>= aux2 content rest
  aux1 _ _ = shellErr $ "bad format, path, of the echo cmd"
  aux2 content rest DZipper{dz_term = File _, dz_k = k} =
@@ -450,16 +454,16 @@ cmd'echo z _ args = aux $ (reads::ReadS String) args
  aux2 _ rest _ = shellErr $ rest ++ " does not point to a file"
 
 
--- Delete the node pointed to by path and return the 
+-- Delete the node pointed to by path and return the
 -- updated zipper (which points to z's parent) and the
 -- deleted node
 del'zipper z path = cd'zipper z path >>= aux
   where
-  aux DZipper{dz_path=[]} = 
+  aux DZipper{dz_path=[]} =
       shellErr $ "cannot remove the root folder"
   aux DZipper{dz_path=(fname:_), dz_k=k} = k Up >>= aux1 fname
   aux1 fname DZipper{dz_term = Folder fld, dz_k = k} =
-   let (Just old'node, fld') = Map.updateLookupWithKey (\_ _ -> Nothing) 
+   let (Just old'node, fld') = Map.updateLookupWithKey (\_ _ -> Nothing)
 			          fname fld
    in k (Update $ Folder $ fld') >>= \z -> return (z,old'node)
 
@@ -480,7 +484,7 @@ cmd'mv z _ args = aux $ breakspan is'whitespace args
   where
   aux ("",_) = shellErr "mv: from-path is empty"
   aux (_,"") = shellErr "mv: to-path is empty"
-  aux (pfrom,pto) = del'zipper z pfrom >>= 
+  aux (pfrom,pto) = del'zipper z pfrom >>=
 		    \ (z,node) -> ins'zipper node z pto
 
 -- cp path_from path_to
